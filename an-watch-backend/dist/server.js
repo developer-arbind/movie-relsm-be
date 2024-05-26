@@ -95,6 +95,8 @@ class RTC {
             lastCharIndex: chipertextCryption.length - 1,
             socketId: this.id,
             isOc: false,
+            streamReady: false,
+            name: this.yourName,
         });
         let index = rooms.findIndex((rt) => JSON.parse(rt).room === room);
         // console.log("the index: ", index);
@@ -130,8 +132,27 @@ class RTC {
         rooms[index] = JSON.stringify(rm);
         // console.log("after changed: ", rm, rooms[index]);
         await redis.lSet("key", index, rooms[index]);
-        wss.to(stack).emit("leave:invitation:for:you", room);
+        wss.to(stack).emit("leave:invitation:for:you", { room, socketId: this.id });
         this.websocket.emit("direct:join:for:you", room);
+    }
+    async updateStreamCondition(room) {
+        this.websocket.join(room);
+        let rooms = await redis.lRange("key", 0, -1);
+        const index = rooms.findIndex((r) => JSON.parse(r).room === room);
+        if (index === -1) {
+            console.error("No room found!");
+            return;
+        }
+        const rm = JSON.parse(rooms[index]);
+        for (let i = 0; i < rm.ips.length; i++) {
+            if (rm.ips[i].ip === this.ipv4) {
+                rm.ips[i].streamReady = true;
+                break;
+            }
+        }
+        rooms[index] = JSON.stringify(rm);
+        await redis.lSet("key", index, rooms[index]);
+        console.log("Light: does everything as planned: ", rm.ips);
     }
     async directJoinforOC(room, ipv6) {
         this.websocket.join(room);
@@ -156,24 +177,26 @@ class RTC {
                 ip: ipv6,
                 socketId: this.id,
                 isOc: true,
+                streamReady: true,
+                name: this.yourName,
             });
         }
         rooms[index] = JSON.stringify(rm);
         await redis.lSet("key", index, rooms[index]);
     }
-    viceVersa(rootA, room) {
-        wss.to(rootA).emit("vice:versa", "from$rootB" + room);
+    viceVersa(rootA, { room, socketId }) {
+        wss.to(rootA).emit("vice:versa", { room, socketId });
     }
-    forcefulleaveRoom(room) {
+    forcefulleaveRoom() {
+        const currentServerIndex = userRTCClasses.findIndex((srv) => srv.socketId == this.ipv4);
+        if (currentServerIndex === -1) {
+            return console.log("Ocps not found! haha");
+        }
+        userRTCClasses.splice(currentServerIndex, 1);
+    }
+    getOutFromRoom(room) {
         this.websocket.leave(room);
         this.websocket.disconnect();
-        const currentServerIndex = userRTCClasses.findIndex((srv) => srv.socketId === this.ipv4);
-        if (currentServerIndex === -1) {
-            console.log("ocps not found!"); // return console.log("Ocps not found! haha");
-        }
-        else {
-            userRTCClasses.splice(currentServerIndex, 1);
-        }
     }
     async createRoom(name, Req, passcode) {
         const ip = Req.headers["x-forwarded-for"] || Req.connection.remoteAddress;
@@ -248,7 +271,7 @@ class RTC {
         const ids = calledRoom.ips;
         // console.log("postgrade ips: ", ids, calledRoom);
         sendingId ? this.websocket.emit("get:ids", ids) : null;
-        console.log("kyaa horrhehai ye???");
+        // console.log("kyaa horrhehai ye???");
         return ids;
     }
     sendNegotiation(offer, socketId, whomSocketId) {
@@ -282,21 +305,130 @@ wss.on("connection", (websocket) => {
     websocket.on("direct:join", (event) => {
         server.directJoinforOC(event.room, event.ip);
     });
+    websocket.on("set:timeline", ({ room, timeline }) => {
+        sendSync(room, {
+            intension: false,
+            relative: false,
+        }, { intension: false, relative: false }, { intension: false, relative: false }, { intension: true, relative: false, rate: 0 }, { intensive: true, time: timeline });
+    });
     websocket.on("on:acceptance", (room) => {
         server.onAcceptance(room);
     });
     websocket.on("sign:accept", (json) => {
         wss.to(json.socketId).emit("you:got:acccepted", json.room);
     });
-    websocket.on("leave:forcefull", (room) => {
-        console.log("ok he just wansts to leave now: ", room);
-        server.forcefulleaveRoom(room);
+    websocket.on("leave:forcefull", () => {
+        // console.log("ok he just wansts to leave now: ", room);
+        server.forcefulleaveRoom();
+    });
+    websocket.on("kick:out", (room) => {
+        server.getOutFromRoom(room);
+    });
+    websocket.on("set:stream:ready", (room) => {
+        console.log("is there something happening?: let's see: ", room);
+        server.updateStreamCondition(room);
     });
     websocket.on("get:receiver:local:track", (socketId) => {
         wss.to(socketId).emit("track:ready");
     });
+    websocket.on("send:message", async ({ room, message }) => {
+        const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === websocket.id)
+                continue;
+            wss.to(ids[i].socketId).emit("get:someone:message", {
+                name: server.yourName,
+                message,
+            });
+        }
+    });
+    let bucketStack = [];
+    let typedBucked = [];
+    websocket.on("set:you:are:typing", async (room) => {
+        let ids;
+        if (bucketStack.length === 0) {
+            ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+            bucketStack[0] = ids;
+            console.log("let suppose typing$");
+        }
+        else {
+            ids = bucketStack[0];
+            console.log("let suppose typing!");
+        }
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === websocket.id)
+                continue;
+            let hasAlready = typedBucked.some((vl) => vl.socketId === ids[i].socketId);
+            console.log("has aleady: ", hasAlready);
+            wss.to(ids[i].socketId).emit("get:someone:typing", {
+                name: server.yourName,
+                socketId: websocket.id,
+                pre: hasAlready,
+            });
+            typedBucked.push({
+                socketId: ids[i].socketId,
+            });
+        }
+    });
+    websocket.on("kick:out:user", (socketId) => {
+        wss.to(socketId).emit("you:are:kicked:out");
+    });
+    websocket.on("user:stopped:typing", async (room) => {
+        const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === websocket.id)
+                continue;
+            wss.to(ids[i].socketId).emit("get:someone:stops:typing", websocket.id);
+            let opposite = typedBucked.filter((el) => el.socketId !== ids[i].socketId);
+            typedBucked = [...opposite];
+        }
+    });
+    websocket.on("send:emoji:reaction", async ({ room, id }) => {
+        console.log("Hello there, is it comming here or not: ", room, id);
+        const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === websocket.id)
+                continue;
+            wss
+                .to(ids[i].socketId)
+                .emit("someone:sends:emoji", { socketId: websocket.id, id });
+        }
+    });
+    websocket.on("pause:due:out:of:visiblity", async (room) => {
+        const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === websocket.id)
+                continue;
+            wss.to(ids[i].socketId).emit("on:someone:pause:controller", websocket.id);
+        }
+    });
+    websocket.on("play:due:of:visiblity", async (room) => {
+        const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === websocket.id)
+                continue;
+            wss
+                .to(ids[i].socketId)
+                .emit("on:someone:resume:controller", websocket.id);
+        }
+    });
     websocket.on("send:negotiation", ({ offer, socketId, mySocketId, }) => {
         server.sendNegotiation(offer, socketId, mySocketId);
+    });
+    websocket.on("get:name", async ({ room, socketId }) => {
+        const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        let name = "";
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === socketId) {
+                name = ids[i].name;
+                break;
+            }
+        }
+        if (name) {
+            websocket.emit("set:name", name);
+        }
     });
     websocket.on("set:mute", async ({ room }) => {
         const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
@@ -343,29 +475,32 @@ wss.on("connection", (websocket) => {
         const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
         if (!ids)
             return;
+        console.log("do am I comming@@ here??:", ids ? true : false);
         for (let i = 0; i < ids.length; i++) {
             if (ids[i].socketId === websocket.id)
                 continue;
+            console.log("intensive and relative: ", pause, forward, increase, speed, Len);
             if (pause.intension &&
                 !forward.intension &&
                 !increase.intension &&
                 !speed.intension &&
-                !Len) {
+                !Len.intensive) {
+                console.log("but it's like a native one!");
                 pause.relative
                     ? wss.to(ids[i].socketId).emit("on:someone:pause", websocket.id)
                     : wss.to(ids[i].socketId).emit("on:someone:resume", websocket.id);
             }
             else if (forward.intension && !speed.intension && !increase.intension) {
-                forward.relative && !Len
+                forward.relative && !Len.intensive
                     ? wss.to(ids[i].socketId).emit("on:someone:forward", websocket.id)
                     : wss.to(ids[i].socketId).emit("on:someone:rewind", websocket.id);
             }
             else if (increase.intension && !speed.intension) {
-                increase.relative && !Len
+                increase.relative && !Len.intensive
                     ? wss.to(ids[i].socketId).emit("on:someone:increase", websocket.id)
                     : wss.to(ids[i].socketId).emit("on:someone:decrease", websocket.id);
             }
-            else if (speed.intension && !Len) {
+            else if (speed.intension && !Len.intensive) {
                 speed.relative
                     ? wss.to(ids[i].socketId).emit("on:someone:speed", {
                         rate: speed.rate,
@@ -377,17 +512,44 @@ wss.on("connection", (websocket) => {
                     });
             }
             else {
-                wss.to(ids[i].socketId).emit("on:someone:skip-timeline", websocket.id);
+                wss.to(ids[i].socketId).emit("on:someone:skip-timeline", {
+                    from: websocket.id,
+                    timeline: Len.time,
+                });
             }
         }
     };
-    websocket.on("pause:stream", async (room) => {
+    websocket.on("set:dragging:portion", async ({ room, timeline }) => {
+        const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === websocket.id)
+                continue;
+            wss
+                .to(ids[i].socketId)
+                .emit("on:dragged:timeline", { user: websocket.id, timeline });
+        }
+    });
+    websocket.on("set:rate:speed", async ({ room, speed }) => {
+        const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === websocket.id)
+                continue;
+            wss
+                .to(ids[i].socketId)
+                .emit("on:playback:speed", { user: websocket.id, speed });
+        }
+    });
+    websocket.on("sync:pause", async (room) => {
         sendSync(room, {
             intension: true,
             relative: true,
         }, { intension: false, relative: false }, { intension: false, relative: false }, { intension: false, relative: false, rate: 0 }, { intensive: false, time: 0 });
     });
-    websocket.on("on:resume", (room) => {
+    websocket.on("sync:play", (room) => {
         sendSync(room, {
             intension: true,
             relative: false,
@@ -429,12 +591,6 @@ wss.on("connection", (websocket) => {
             relative: false,
         }, { intension: false, relative: false }, { intension: false, relative: false }, { intension: true, relative: false, rate }, { intensive: false, time: 0 });
     });
-    websocket.on("on:time:skip:by", ({ room, timeline }) => {
-        sendSync(room, {
-            intension: false,
-            relative: false,
-        }, { intension: false, relative: false }, { intension: false, relative: false }, { intension: true, relative: false, rate: 0 }, { intensive: true, time: timeline });
-    });
     websocket.on("send:ids:to:me", (room) => {
         server.getAllSocketsOfARoom(room, true);
     });
@@ -453,22 +609,35 @@ wss.on("connection", (websocket) => {
                 .emit("on:chat:message:recieved", { socketId: websocket.id, message });
         }
     });
-    websocket.on("i:am:done", async (room) => {
+    websocket.on("i:am:done", async ({ room, socketId }) => {
         console.log("user wants to leave$: ", room, server.roomName);
-        // console.log("the room server names!: ", server.roomName, room);
         const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
-        console.log("simple ips: ", ids);
         if (!ids)
             return;
-        console.log("aws protocol service: ", ids);
         for (let i = 0; i < ids.length; i++) {
-            if (ids[i].socketId === websocket.id)
+            if (ids[i].socketId === websocket.id || ids[i].socketId === socketId)
                 continue;
             wss.to(ids[i].socketId).emit("on:user:disconnects", websocket.id);
         }
     });
     websocket.on("send-offer", ({ socketId, offer, mySocketId, }) => {
         server.sendOffer(offer, socketId, mySocketId);
+    });
+    websocket.on("get:admin:timeline", async (room) => {
+        const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === websocket.id)
+                continue;
+            if (ids[i].isOc) {
+                wss.to(ids[i].socketId).emit("pass:the:timeline", websocket.id);
+                break;
+            }
+        }
+    });
+    websocket.on("send:back:timeline", ({ user, timeline }) => {
+        wss.to(user).emit("get:back:the:timeline", timeline);
     });
     websocket.on("send:remote:offer", ({ socketId, answer, }) => {
         server.sendAnswer(answer, socketId);
@@ -706,7 +875,7 @@ app.get("/verify-oc-token/:room", async (Req, Res) => {
             });
         const detectingIp = ocsIp.filter((IPV) => IPV.ip === ip && IPV.isOc)[0];
         if (detectingIp.hasOwnProperty("ip")) {
-            server.viceVersa(detectingIp.socketId, room);
+            server.viceVersa(detectingIp.socketId, { room, socketId: server.id });
         }
         return Res.status(200).json({
             message: "Encryption succeed",
