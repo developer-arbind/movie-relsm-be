@@ -314,10 +314,17 @@ class RTC {
     return `${process.env.ENDPOINT}/${this.room}`;
   }
 
-  async deleteRoom(room: string) {
+  async deleteRoom(room: string, server: RTC) {
+    const ids: IP[] = await server.getAllSocketsOfARoom(
+      server.roomName ? server.roomName : room
+    );
+    if (!ids) return;
+    for (let i = 0; i < ids.length; i++) {
+      if (ids[i].socketId === this.id) continue;
+      wss.to(ids[i].socketId).emit("room:deleted:by:admin");
+    }
     await redis.lRem("key", 1, JSON.stringify({ room: room }));
     await redis.lRem("oc-ips", 1, JSON.stringify({ ocOf: room }));
-    this.websocket.emit("room:deleted", "sucesss");
   }
 
   generateRandomToken(length: number): string {
@@ -461,6 +468,7 @@ wss.on("connection", (websocket: Socket) => {
     const ids: IP[] = await server.getAllSocketsOfARoom(
       server.roomName ? server.roomName : room
     );
+    if (!ids) return;
     for (let i = 0; i < ids.length; i++) {
       if (ids[i].socketId === websocket.id) continue;
       wss.to(ids[i].socketId).emit("get:someone:message", {
@@ -512,6 +520,7 @@ wss.on("connection", (websocket: Socket) => {
     const ids: IP[] = await server.getAllSocketsOfARoom(
       server.roomName ? server.roomName : room
     );
+    if (!ids) return;
     for (let i = 0; i < ids.length; i++) {
       if (ids[i].socketId === websocket.id) continue;
       wss.to(ids[i].socketId).emit("get:someone:stops:typing", websocket.id);
@@ -528,6 +537,7 @@ wss.on("connection", (websocket: Socket) => {
     const ids: IP[] = await server.getAllSocketsOfARoom(
       server.roomName ? server.roomName : room
     );
+    if (!ids) return;
     for (let i = 0; i < ids.length; i++) {
       if (ids[i].socketId === websocket.id) continue;
       wss
@@ -540,6 +550,7 @@ wss.on("connection", (websocket: Socket) => {
     const ids: IP[] = await server.getAllSocketsOfARoom(
       server.roomName ? server.roomName : room
     );
+    if (!ids) return;
     for (let i = 0; i < ids.length; i++) {
       if (ids[i].socketId === websocket.id) continue;
       wss.to(ids[i].socketId).emit("on:someone:pause:controller", websocket.id);
@@ -560,6 +571,7 @@ wss.on("connection", (websocket: Socket) => {
     const ids: IP[] = await server.getAllSocketsOfARoom(
       server.roomName ? server.roomName : room
     );
+    if (!ids) return;
     for (let i = 0; i < ids.length; i++) {
       if (ids[i].socketId === websocket.id) continue;
       wss.to(ids[i].socketId).emit("on:someone:stopped:speaking", websocket.id);
@@ -578,6 +590,7 @@ wss.on("connection", (websocket: Socket) => {
         .emit("on:someone:resume:controller", websocket.id);
     }
   });
+
   websocket.on(
     "send:negotiation",
     ({
@@ -597,6 +610,8 @@ wss.on("connection", (websocket: Socket) => {
     const ids: IP[] = await server.getAllSocketsOfARoom(
       server.roomName ? server.roomName : room
     );
+
+    if (!ids) return;
     let name: string = "";
     for (let i = 0; i < ids.length; i++) {
       if (ids[i].socketId === socketId) {
@@ -630,6 +645,8 @@ wss.on("connection", (websocket: Socket) => {
     const ids: IP[] = await server.getAllSocketsOfARoom(
       server.roomName ? server.roomName : room
     );
+
+    if (!ids) return;
     for (let i = 0; i < ids.length; i++) {
       if (ids[i].socketId === websocket.id) continue;
       wss.to(ids[i].socketId).emit("on:user:stream:mute", websocket.id);
@@ -639,6 +656,8 @@ wss.on("connection", (websocket: Socket) => {
     const ids: IP[] = await server.getAllSocketsOfARoom(
       server.roomName ? server.roomName : room
     );
+
+    if (!ids) return;
     for (let i = 0; i < ids.length; i++) {
       if (ids[i].socketId === websocket.id) continue;
       wss.to(ids[i].socketId).emit("on:user:stream:unmute", websocket.id);
@@ -948,7 +967,7 @@ wss.on("connection", (websocket: Socket) => {
     }
   );
   websocket.on("delete:room", (room: string) => {
-    server.deleteRoom(room);
+    server.deleteRoom(room, server);
   });
 });
 

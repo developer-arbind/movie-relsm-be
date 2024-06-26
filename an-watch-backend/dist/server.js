@@ -222,10 +222,17 @@ class RTC {
         this.websocket.join(this.room);
         return `${process.env.ENDPOINT}/${this.room}`;
     }
-    async deleteRoom(room) {
+    async deleteRoom(room, server) {
+        const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === this.id)
+                continue;
+            wss.to(ids[i].socketId).emit("room:deleted:by:admin");
+        }
         await redis.lRem("key", 1, JSON.stringify({ room: room }));
         await redis.lRem("oc-ips", 1, JSON.stringify({ ocOf: room }));
-        this.websocket.emit("room:deleted", "sucesss");
     }
     generateRandomToken(length) {
         const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -333,6 +340,8 @@ wss.on("connection", (websocket) => {
     });
     websocket.on("send:message", async ({ room, message }) => {
         const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
         for (let i = 0; i < ids.length; i++) {
             if (ids[i].socketId === websocket.id)
                 continue;
@@ -375,6 +384,8 @@ wss.on("connection", (websocket) => {
     });
     websocket.on("user:stopped:typing", async (room) => {
         const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
         for (let i = 0; i < ids.length; i++) {
             if (ids[i].socketId === websocket.id)
                 continue;
@@ -386,6 +397,8 @@ wss.on("connection", (websocket) => {
     websocket.on("send:emoji:reaction", async ({ room, id }) => {
         console.log("Hello there, is it comming here or not: ", room, id);
         const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
         for (let i = 0; i < ids.length; i++) {
             if (ids[i].socketId === websocket.id)
                 continue;
@@ -396,10 +409,30 @@ wss.on("connection", (websocket) => {
     });
     websocket.on("pause:due:out:of:visiblity", async (room) => {
         const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
         for (let i = 0; i < ids.length; i++) {
             if (ids[i].socketId === websocket.id)
                 continue;
             wss.to(ids[i].socketId).emit("on:someone:pause:controller", websocket.id);
+        }
+    });
+    websocket.on("i:am:speaking", async (room) => {
+        const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === websocket.id)
+                continue;
+            wss.to(ids[i].socketId).emit("on:someone:speaking", websocket.id);
+        }
+    });
+    websocket.on("i:am:stopped:speaking", async (room) => {
+        const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === websocket.id)
+                continue;
+            wss.to(ids[i].socketId).emit("on:someone:stopped:speaking", websocket.id);
         }
     });
     websocket.on("play:due:of:visiblity", async (room) => {
@@ -419,6 +452,8 @@ wss.on("connection", (websocket) => {
     });
     websocket.on("get:name", async ({ room, socketId }) => {
         const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
         let name = "";
         for (let i = 0; i < ids.length; i++) {
             if (ids[i].socketId === socketId) {
@@ -448,6 +483,8 @@ wss.on("connection", (websocket) => {
     });
     websocket.on("set:video:mute", async ({ room }) => {
         const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
         for (let i = 0; i < ids.length; i++) {
             if (ids[i].socketId === websocket.id)
                 continue;
@@ -456,6 +493,8 @@ wss.on("connection", (websocket) => {
     });
     websocket.on("set:video:unmute", async ({ room }) => {
         const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
         for (let i = 0; i < ids.length; i++) {
             if (ids[i].socketId === websocket.id)
                 continue;
@@ -643,7 +682,7 @@ wss.on("connection", (websocket) => {
         server.sendAnswer(answer, socketId);
     });
     websocket.on("delete:room", (room) => {
-        server.deleteRoom(room);
+        server.deleteRoom(room, server);
     });
 });
 app.post("/:room", async (Req, Res) => {
