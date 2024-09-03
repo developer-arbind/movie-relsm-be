@@ -1,7 +1,7 @@
 import express, { Request, Response } from "express";
 import http from "http";
 import { Socket, Server } from "socket.io";
-import { v4 as uuidv4 } from "uuid";
+import { uuid as uuidv4 } from "uuidv4";
 import { TimeSeriesDuplicatePolicies, createClient } from "redis";
 import jwt, { JwtPayload, Secret } from "jsonwebtoken";
 import cookie from "cookie";
@@ -41,7 +41,7 @@ const app = express();
 app.use(express.json());
 app.use(cookieParser());
 const xrss = {
-  origin: process.env.CONNECTION_STRING,
+  origins: [process.env.CONNECTION_STRING, "https://s5ljfdrz-5173.inc1.devtunnels.ms"],
   methods: ["*"],
   credentials: true,
 };

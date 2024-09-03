@@ -26,7 +26,8 @@
     "redis-cli": "^2.1.2",
     "socket.io": "^4.7.5",
     "typescript": "^5.4.5",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "uuidv4": "^6.2.13"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",

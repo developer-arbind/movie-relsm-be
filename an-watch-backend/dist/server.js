@@ -1,7 +1,7 @@
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
-import { v4 as uuidv4 } from "uuid";
+import { uuid as uuidv4 } from "uuidv4";
 import { createClient } from "redis";
 import jwt from "jsonwebtoken";
 import cookie from "cookie";
