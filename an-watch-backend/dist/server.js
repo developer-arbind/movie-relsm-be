@@ -34,8 +34,8 @@ const app = express();
 app.use(express.json());
 app.use(cookieParser());
 const xrss = {
-    origin: process.env.CONNECTION_STRING,
-    methods: ["*"],
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true,
 };
 app.use(cors(xrss));
@@ -338,7 +338,7 @@ wss.on("connection", (websocket) => {
     websocket.on("get:receiver:local:track", (socketId) => {
         wss.to(socketId).emit("track:ready");
     });
-    websocket.on("send:message", async ({ room, message }) => {
+    websocket.on("send:message", async ({ room, message, uuid }) => {
         const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
         if (!ids)
             return;
@@ -348,6 +348,8 @@ wss.on("connection", (websocket) => {
             wss.to(ids[i].socketId).emit("get:someone:message", {
                 name: server.yourName,
                 message,
+                socketId: ids[i].socketId,
+                uuid
             });
         }
     });
@@ -951,6 +953,7 @@ app.get("/create-room/:payload/:passcode", async (Req, Res) => {
 app.get("/name/:name", async (Req, Res) => {
     const detecting = await detectIp(Req);
     if (detecting) {
+        console.log("!!!!");
         return Res.status(400).json({
             error: "end one room, before creating one",
             code: 400,
