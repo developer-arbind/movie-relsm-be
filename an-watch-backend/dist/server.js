@@ -13,7 +13,14 @@ import cookieParser from "cookie-parser";
 import CryptoJS from "crypto-js";
 // const secret = new fernet.Secret(process.env.CIPHERTEXT_ALGORITHM as string);
 const secretToken = process.env.CIPHERTEXT_ALGORITHM;
-const redis = createClient();
+// const redis = createClient();
+const redis = createClient({
+    password: 'UjomROmMOf9O5Ot5KBunYHxx0WWOwBeH',
+    socket: {
+        host: 'redis-17871.c74.us-east-1-4.ec2.redns.redis-cloud.com',
+        port: 17871
+    }
+});
 /** @{param}
  * {
     password: 'jsOeGe8GU4UI2Cs8vjmd88dHctEE7a48',
@@ -97,6 +104,8 @@ class RTC {
             isOc: false,
             streamReady: false,
             name: this.yourName,
+            mute: false,
+            webcam: false
         });
         let index = rooms.findIndex((rt) => JSON.parse(rt).room === room);
         // console.log("the index: ", index);
@@ -179,6 +188,8 @@ class RTC {
                 isOc: true,
                 streamReady: true,
                 name: this.yourName,
+                webcam: false,
+                mute: false
             });
         }
         rooms[index] = JSON.stringify(rm);
@@ -234,6 +245,50 @@ class RTC {
         await redis.lRem("key", 1, JSON.stringify({ room: room }));
         await redis.lRem("oc-ips", 1, JSON.stringify({ ocOf: room }));
     }
+    async removeUserFromRoom(room, socketId) {
+        let rooms = await redis.lRange("key", 0, -1);
+        const index = rooms.findIndex((r) => JSON.parse(r).room === room);
+        if (index === -1) {
+            console.error("Room not found!");
+            return;
+        }
+        const rm = JSON.parse(rooms[index]);
+        rm.ips = rm.ips.filter((ip) => ip.socketId !== socketId);
+        rooms[index] = JSON.stringify(rm);
+        await redis.lSet("key", index, rooms[index]);
+        wss.to(socketId).emit("removed:from:room", { room });
+        console.log(`User ${socketId} removed from room ${room}`);
+    }
+    async setTrackOption(room, socketId, video, block) {
+        let rooms = await redis.lRange("key", 0, -1);
+        const index = rooms.findIndex((r) => JSON.parse(r).room === room);
+        if (index === -1) {
+            console.error("Room not found!");
+            return;
+        }
+        const rm = JSON.parse(rooms[index]);
+        rm.ips.map((prev) => {
+            if (prev.socketId === socketId) {
+                if (video) {
+                    return {
+                        ...prev,
+                        webcam: block
+                    };
+                }
+                else {
+                    return {
+                        ...prev,
+                        mute: block
+                    };
+                }
+            }
+            return prev;
+        });
+        rooms[index] = JSON.stringify(rm);
+        await redis.lSet("key", index, rooms[index]);
+        wss.to(socketId).emit("removed:from:room", { room });
+        console.log(`User ${socketId} changed their track option in room: ${room}`);
+    }
     generateRandomToken(length) {
         const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
         let token = "";
@@ -264,10 +319,10 @@ class RTC {
     sendOffer(offer, socketId, mySocketId) {
         wss
             .to(socketId)
-            .emit("get:remote:offer", { offer, whomSocketId: mySocketId });
+            .emit("get:remote:offer", { offer, whomSocketId: this.id });
     }
     sendAnswer(answer, socketId) {
-        wss.to(socketId).emit("get:remote:answer", { answer });
+        wss.to(socketId).emit("get:remote:answer", { answer, socketId: this.id });
     }
     async getAllSocketsOfARoom(room, sendingId) {
         const rooms = await redis.lRange("key", 0, -1);
@@ -283,18 +338,23 @@ class RTC {
     }
     sendNegotiation(offer, socketId, whomSocketId) {
         // console.log("it is my socket id bro: ", whomSocketId, socketId);
-        wss.to(socketId).emit("get:negotiation", { offer, socketId: whomSocketId });
+        wss.to(socketId).emit("get:negotiation", { offer, socketId: this.id });
     }
     sendNegotiationAnswer(answer, socketId) {
-        wss.to(socketId).emit("get:negotiation:answer", { answer });
+        wss.to(socketId).emit("get:negotiation:answer", { answer, socketId: this.id });
     }
 }
-const detectIp = async (Req) => {
+const detectIp = async (Req, roomId) => {
     let memory = await redis.lRange("key", 0, -1);
     const ip = Req.headers["x-forwarded-for"] || Req.connection.remoteAddress;
     const pointer = memory.findIndex((locator) => JSON.parse(locator).ips.some((item) => item.ip === ip));
     if (pointer > -1) {
         console.log("room found!");
+        const roomCode = memory[pointer];
+        console.log("about the l-pasent: ", JSON.parse(roomCode));
+        if (JSON.parse(roomCode).room === roomId) {
+            return false;
+        }
         return true;
     }
     return false;
@@ -324,8 +384,9 @@ wss.on("connection", (websocket) => {
     websocket.on("sign:accept", (json) => {
         wss.to(json.socketId).emit("you:got:acccepted", json.room);
     });
-    websocket.on("leave:forcefull", () => {
+    websocket.on("leave:forcefull", ({ room, socketId }) => {
         // console.log("ok he just wansts to leave now: ", room);
+        server.removeUserFromRoom(room, socketId);
         server.forcefulleaveRoom();
     });
     websocket.on("kick:out", (room) => {
@@ -335,8 +396,11 @@ wss.on("connection", (websocket) => {
         console.log("is there something happening?: let's see: ", room);
         server.updateStreamCondition(room);
     });
-    websocket.on("get:receiver:local:track", (socketId) => {
-        wss.to(socketId).emit("track:ready");
+    // websocket.on("get:receiver:local:track", (socketId: string) => {
+    //   wss.to(socketId).emit("track:ready");
+    // });
+    websocket.on("send-track-vice-versa", (socketId) => {
+        wss.to(socketId).emit("send-track", websocket.id);
     });
     websocket.on("send:message", async ({ room, message, uuid }) => {
         const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
@@ -348,8 +412,8 @@ wss.on("connection", (websocket) => {
             wss.to(ids[i].socketId).emit("get:someone:message", {
                 name: server.yourName,
                 message,
-                socketId: ids[i].socketId,
-                uuid
+                socketId: websocket.id,
+                uuid,
             });
         }
     });
@@ -397,7 +461,7 @@ wss.on("connection", (websocket) => {
         }
     });
     websocket.on("send:emoji:reaction", async ({ room, id }) => {
-        console.log("Hello there, is it comming here or not: ", room, id);
+        console.log("Hello there, is it comming here or not (emoji section explicit): ", room, id);
         const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
         if (!ids)
             return;
@@ -425,6 +489,19 @@ wss.on("connection", (websocket) => {
             if (ids[i].socketId === websocket.id)
                 continue;
             wss.to(ids[i].socketId).emit("on:someone:speaking", websocket.id);
+        }
+    });
+    websocket.on("set:my:track:option", ({ room, socketId, block, video }) => {
+        server.setTrackOption(room, socketId, video, block);
+    });
+    websocket.on("get:remotes:track:options", async ({ room, socketId }) => {
+        const ids = await server.getAllSocketsOfARoom(server.roomName ? server.roomName : room);
+        if (!ids)
+            return;
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i].socketId === socketId) {
+                websocket.emit("get:specific:user:track", ids[i]);
+            }
         }
     });
     websocket.on("i:am:stopped:speaking", async (room) => {
@@ -697,7 +774,7 @@ app.post("/:room", async (Req, Res) => {
         try {
             if (!room)
                 return Res.status(404).json({
-                    error: "page not found!",
+                    error: "Page Not Foound!",
                     code: process.env.PAGENOTFOUND,
                 });
             const rooms = await redis.lRange("key", 0, -1);
@@ -765,7 +842,7 @@ app.post("/:room", async (Req, Res) => {
         let pass = server.getPushVerificaation();
         if (!pass.passcode)
             return Res.status(404).json({
-                error: "page not found!",
+                error: "Since you've already kicked out, you can't resend request.. try another room!",
                 code: process.env.PAGENOTFOUND,
             });
         if (pass.hasOwnProperty("passcode") && pass?.passcode !== passcode) {
@@ -849,7 +926,6 @@ app.get("/verify-oc-token/:room", async (Req, Res) => {
     try {
         const ip = Req.headers["x-forwarded-for"] || Req.connection.remoteAddress;
         server.setIp(ip);
-        // console.log("your ip address is : ", ip);
         const room = Req.params.room;
         const cache = await redis.lRange("key", 0, -1);
         const folder = cache.filter((r) => JSON.parse(r).room === room);
@@ -950,8 +1026,8 @@ app.get("/create-room/:payload/:passcode", async (Req, Res) => {
         code: 200,
     });
 });
-app.get("/name/:name", async (Req, Res) => {
-    const detecting = await detectIp(Req);
+app.get("/name/:name/:room", async (Req, Res) => {
+    const detecting = await detectIp(Req, Req.params.room);
     if (detecting) {
         console.log("!!!!");
         return Res.status(400).json({
